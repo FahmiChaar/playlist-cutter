@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Playlist Cutter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>Playlist Cutter</h1>
+  <button id="projectsBtn" class="btn ghost">Projects</button>
+</header>
+
+<main>
+  <section class="import">
+    <label for="urlInput">YouTube playlist URL</label>
+    <div class="import-row">
+      <input id="urlInput" type="url" inputmode="url" placeholder="https://www.youtube.com/playlist?list=…" autocomplete="off">
+      <button id="importBtn" class="btn primary">Import</button>
+    </div>
+    <p id="importMsg" class="muted" aria-live="polite"></p>
+  </section>
+
+  <div id="editor" hidden>
+    <h2 id="playlistTitle" class="playlist-title"></h2>
+
+    <section class="block">
+      <div class="block-head">
+        <h3>Rules</h3>
+        <button id="addGroupBtn" class="btn ghost small">Add group</button>
+      </div>
+      <details class="help">
+        <summary>How to write times</summary>
+        <dl>
+          <dt>1:30</dt><dd>At 1 min 30 s from the start of the video</dd>
+          <dt>-0:30</dt><dd>30 s before the end of the video</dd>
+          <dt>+10:00</dt><dd>End only: 10 min after the cut start</dd>
+          <dt>90</dt><dd>Plain seconds work too, and so does 1:02:30</dd>
+          <dt>empty</dt><dd>Start of the video, or end of the video</dd>
+        </dl>
+        <p>A video uses its own start and end first, then its group rule, then the default rule.</p>
+      </details>
+      <div id="groups"></div>
+    </section>
+
+    <section class="block">
+      <div class="block-head">
+        <h3>Videos</h3>
+        <span id="videoCount" class="muted"></span>
+      </div>
+      <div id="videos"></div>
+    </section>
+
+    <section class="block settings" id="settings">
+      <h3>Output</h3>
+      <label class="field">File name
+        <input id="outputName" autocomplete="off">
+      </label>
+      <label class="field">Quality
+        <select id="quality">
+          <option value="360">360p</option>
+          <option value="480">480p</option>
+          <option value="720">720p</option>
+          <option value="1080">1080p</option>
+        </select>
+      </label>
+      <fieldset class="modes">
+        <legend>Cutting</legend>
+        <label class="mode"><input type="radio" name="mode" value="fast"><span><strong>Fast</strong>No re-encoding. Cuts can land up to about 2 s off.</span></label>
+        <label class="mode"><input type="radio" name="mode" value="precise"><span><strong>Precise</strong>Re-encodes every video. Exact cuts, but slow and heavy on the battery.</span></label>
+      </fieldset>
+      <label class="toggle"><input type="checkbox" id="dataSaver"><span>Download only the kept part<small>Saves mobile data. Fast mode only, still experimental.</small></span></label>
+      <label class="toggle"><input type="checkbox" id="chapters"><span>Add chapters<small>One chapter per video, named after its title.</small></span></label>
+      <label class="toggle"><input type="checkbox" id="keepFiles"><span>Keep downloaded files<small>Lets you change cuts and process again without downloading.</small></span></label>
+    </section>
+  </div>
+</main>
+
+<footer id="totals" class="totals" hidden>
+  <div class="totals-text">
+    <span id="totTime" class="tot-main"></span>
+    <span id="totMeta" class="muted"></span>
+    <span id="totErrors" class="tot-errors" hidden></span>
+  </div>
+  <button id="processBtn" class="btn primary">Process</button>
+</footer>
+
+<dialog id="previewDlg" class="sheet">
+  <div class="sheet-head">
+    <strong id="pvTitle"></strong>
+    <button class="icon-btn" data-close aria-label="Close">✕</button>
+  </div>
+  <div class="player-wrap"><div id="player"></div></div>
+  <p id="pvError" class="err" hidden>This video can’t be played here. Use the YouTube link below.</p>
+  <div class="pv-clock">
+    <span>Now <strong id="pvNow">0:00</strong></span>
+    <span>Cut <strong id="pvCut"></strong></span>
+  </div>
+  <div class="pv-grid">
+    <button class="btn primary" data-pv="set-start">Set start here</button>
+    <button class="btn primary" data-pv="set-end">Set end here</button>
+    <button class="btn" data-pv="go-start">Go to start</button>
+    <button class="btn" data-pv="go-end">Go to end −10 s</button>
+    <button class="btn ghost" data-pv="back">−5 s</button>
+    <button class="btn ghost" data-pv="fwd">+5 s</button>
+  </div>
+  <a id="pvOpen" class="link" target="_blank" rel="noopener">Open on YouTube</a>
+</dialog>
+
+<dialog id="jobDlg" class="sheet">
+  <div class="sheet-head">
+    <strong id="jobTitle">Processing</strong>
+    <button class="icon-btn" data-close aria-label="Close">✕</button>
+  </div>
+  <p class="job-phase"><span id="jobPhase"></span><span id="jobPct"></span></p>
+  <div class="bar big"><span id="jobBar"></span></div>
+  <p id="jobWarning" class="warn" hidden></p>
+  <p id="jobError" class="err" hidden></p>
+  <p id="jobDone" class="done" hidden></p>
+  <ul id="jobItems" class="job-items"></ul>
+  <details class="log">
+    <summary>Log</summary>
+    <pre id="jobLog"></pre>
+  </details>
+  <div class="sheet-actions">
+    <button id="cancelBtn" class="btn danger">Cancel</button>
+    <a id="playLink" class="btn" target="_blank" hidden>Play here</a>
+    <button id="openBtn" class="btn primary" hidden>Open video</button>
+  </div>
+</dialog>
+
+<dialog id="projectsDlg" class="sheet">
+  <div class="sheet-head">
+    <strong>Projects</strong>
+    <button class="icon-btn" data-close aria-label="Close">✕</button>
+  </div>
+  <div class="import-row">
+    <input id="saveName" placeholder="Project name" autocomplete="off">
+    <button id="saveBtn" class="btn primary">Save</button>
+  </div>
+  <ul id="projectList" class="project-list"></ul>
+  <button id="newBtn" class="btn ghost">Start a new project</button>
+</dialog>
+
+<div id="toast" class="toast" role="status"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
