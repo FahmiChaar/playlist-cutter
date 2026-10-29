@@ -777,6 +777,7 @@ dialog.sheet::backdrop {
 
 .warn {
   background: var(--warn-bg);
+  white-space: pre-line;
 }
 
 .done {

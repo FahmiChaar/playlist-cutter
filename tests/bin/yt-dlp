@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+import json
+import subprocess
+import sys
+
+COUNT = 8
+LENGTH = 24
+
+args = sys.argv[1:]
+if "--flat-playlist" in args:
+    entries = [{"id": f"testvid{i:04d}", "title": f"Video {i} = part #{i}", "duration": LENGTH} for i in range(1, COUNT + 1)]
+    print(json.dumps({"title": "Test playlist", "entries": entries}))
+    sys.exit(0)
+
+out = args[args.index("-o") + 1].replace("%(ext)s", "mp4")
+video_id = args[-1].rsplit("=", 1)[-1]
+duration = float(LENGTH)
+if "--download-sections" in args:
+    start, end = args[args.index("--download-sections") + 1].lstrip("*").split("-")
+    duration = float(end) - float(start)
+size = "1280x720" if int(video_id[-1]) % 2 else "640x360"
+rate = "30" if int(video_id[-1]) % 3 else "25"
+print("[download]  50.0% of 1.00MiB", flush=True)
+subprocess.run([
+    "ffmpeg", "-y", "-loglevel", "error",
+    "-f", "lavfi", "-i", f"testsrc2=size={size}:rate={rate}:duration={duration}",
+    "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={duration}",
+    "-c:v", "libx264", "-g", "120", "-bf", "2", "-c:a", "aac", "-shortest", out,
+], check=True)
+print("[download] 100% of 1.00MiB", flush=True)

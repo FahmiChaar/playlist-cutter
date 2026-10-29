@@ -2,16 +2,14 @@
 
 Trim the intro and outro of every video in a YouTube playlist and merge them into one MP4, from your Android phone.
 
-## Install (once)
+## Install on the phone (once)
 
-1. Install Termux from F-Droid (not the Play Store).
-2. Copy `playlist-cutter.zip` to your phone's Download folder.
-3. In Termux:
+Install Termux from F-Droid, then in Termux:
 
 ```
 termux-setup-storage
-pkg install -y unzip
-unzip ~/storage/downloads/playlist-cutter.zip -d ~
+pkg install -y git
+git clone https://github.com/FahmiChaar/playlist-cutter ~/playlist-cutter
 cd ~/playlist-cutter
 bash install.sh
 ```
@@ -19,23 +17,37 @@ bash install.sh
 ## Run
 
 ```
-cd ~/playlist-cutter
-bash run.sh
+bash ~/playlist-cutter/run.sh
 ```
 
-The app opens in your browser at http://localhost:8080. Keep Termux running while you use it.
-For long jobs, tap "Acquire wakelock" in the Termux notification so Android doesn't stop it (the app also requests one while processing).
+Each launch pulls the latest version from GitHub, updates yt-dlp once a week, then opens the app at http://localhost:8080.
+To force a yt-dlp update right away: `bash run.sh --update`.
 
-When YouTube changes something and downloads start failing, update yt-dlp:
+## Home-screen shortcut
+
+Install Termux:Widget from F-Droid, then:
 
 ```
-bash run.sh --update
+mkdir -p ~/.shortcuts
+cat > ~/.shortcuts/playlist-cutter <<'SH'
+#!/data/data/com.termux/files/usr/bin/bash
+if curl -s -o /dev/null http://localhost:8080; then
+  termux-open-url http://localhost:8080
+else
+  bash ~/playlist-cutter/run.sh
+fi
+SH
+chmod +x ~/.shortcuts/playlist-cutter
 ```
+
+## Develop
+
+Push to `main` from your computer. GitHub Actions runs `tests/smoke.sh`, which cuts and merges generated test videos with a fake yt-dlp and checks that Precise mode keeps audio and video in sync. The phone picks up the change on its next launch.
 
 ## Where files go
 
 - Merged videos: `Download/PlaylistCutter/`
 - Saved projects: `~/.playlist-cutter/projects/`
-- Temporary downloads: `~/.playlist-cutter/work/` (deleted after a successful merge unless "Keep downloaded files" is on)
+- Temporary downloads: `~/.playlist-cutter/work/`, deleted after a successful merge unless "Keep downloaded files" is on
 
 If processing stops halfway, press Process again: finished videos are reused.

@@ -704,8 +704,9 @@ function renderJob(job) {
   $("#jobPhase").textContent = job.phase;
   $("#jobPct").textContent = `${Math.round(job.overall)}%`;
   $("#jobBar").style.width = `${job.overall}%`;
-  $("#jobWarning").hidden = !job.warning;
-  $("#jobWarning").textContent = job.warning || "";
+  const warnings = job.warnings || [];
+  $("#jobWarning").hidden = warnings.length === 0;
+  $("#jobWarning").textContent = warnings.join("\n");
   $("#jobError").hidden = !job.error;
   $("#jobError").textContent = job.error ? `${job.error}. Process again to resume: finished videos are kept.` : "";
   $("#jobDone").hidden = job.status !== "done";

@@ -32,6 +32,8 @@ YTDLP_PCT = re.compile(r"^\[download\]\s+([\d.]+)%")
 FFMPEG_TIME = re.compile(r"time=(\d+):(\d+):([\d.]+)")
 SB_API = "https://sponsor.ajay.app/api/skipSegments"
 FFMPEG = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1"]
+PRE_ROLL = 5.0
+CLIP_VERSION = "2"
 
 app = Flask(__name__, static_folder=str(BASE / "static"), static_url_path="/static")
 JOB = None
@@ -85,6 +87,28 @@ def probe_duration(path):
     return float(probe(path, "format=duration").get("format", {}).get("duration") or 0)
 
 
+def has_audio(path):
+    return any(s.get("codec_type") == "audio" for s in probe(path, "stream=codec_type").get("streams", []))
+
+
+def stream_durations(path):
+    streams = probe(path, "stream=codec_type,duration").get("streams", [])
+    return {s["codec_type"]: float(s["duration"]) for s in streams if s.get("duration") not in (None, "N/A")}
+
+
+def next_keyframe(path, start):
+    out = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey",
+            "-read_intervals", f"{start:.3f}%+30", "-show_entries", "frame=best_effort_timestamp_time",
+            "-of", "csv=p=0", str(path),
+        ],
+        capture_output=True, text=True, timeout=120,
+    ).stdout
+    times = sorted(float(t) for t in out.split() if t.replace(".", "", 1).isdigit())
+    return next((t for t in times if t >= start - 0.001), start)
+
+
 def stream_signature(path):
     streams = probe(path, "stream=codec_type,codec_name,width,height,sample_rate,channels").get("streams", [])
     return tuple(sorted(tuple(sorted((k, str(v)) for k, v in s.items())) for s in streams))
@@ -104,7 +128,7 @@ def chapters_file(titles, durations):
 
 
 def clip_key(video, spec):
-    raw = f"{video['id']}|{spec['quality']}|{spec['mode']}|{spec['dataSaver']}|{video['start']:.3f}|{video['end']:.3f}"
+    raw = f"{CLIP_VERSION}|{video['id']}|{spec['quality']}|{spec['mode']}|{spec['dataSaver']}|{video['start']:.3f}|{video['end']:.3f}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -117,6 +141,29 @@ def download_progress(line, length):
         h, m, s = match.groups()
         return min((int(h) * 3600 + int(m) * 60 + float(s)) / length * 100, 100.0)
     return None
+
+
+def precise_cut_cmd(source, start, length, quality, out):
+    seek = max(start - PRE_ROLL, 0.0)
+    offset = start - seek
+    w, h = FRAME[quality]
+    window = f"start={offset:.3f}:duration={length:.3f}"
+    video = (
+        f"[0:v:0]trim={window},setpts=PTS-STARTPTS,"
+        f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v]"
+    )
+    if has_audio(source):
+        audio = (
+            f"[0:a:0]atrim={window},asetpts=PTS-STARTPTS,aresample=44100,"
+            f"aformat=channel_layouts=stereo,apad=whole_dur={length:.3f}[a]"
+        )
+    else:
+        audio = f"anullsrc=r=44100:cl=stereo,atrim=duration={length:.3f}[a]"
+    return [
+        *FFMPEG, "-ss", f"{seek:.3f}", "-i", str(source), "-filter_complex", f"{video};{audio}",
+        "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k", "-f", "mpegts", str(out),
+    ]
 
 
 def ffmpeg_reader(length, set_pct):
@@ -142,7 +189,7 @@ class Job:
         self.items = [{"id": v["id"], "title": v["title"], "state": "pending", "progress": 0.0} for v in spec["videos"]]
         self.merge_progress = 0.0
         self.log = []
-        self.warning = None
+        self.warnings = []
         self.error = None
         self.output = None
         self.proc = None
@@ -158,7 +205,7 @@ class Job:
             "items": self.items,
             "overall": round(items_avg * 0.9 + self.merge_progress * 0.1, 1),
             "log": self.log[-150:],
-            "warning": self.warning,
+            "warnings": self.warnings,
             "error": self.error,
             "output": Path(self.output).name if self.output else None,
             "outputPath": self.output,
@@ -216,7 +263,8 @@ class Job:
 
     def prepare(self, index, video):
         item = self.items[index]
-        clip = CLIPS / f"{clip_key(video, self.spec)}.mp4"
+        ext = "ts" if self.spec["mode"] == "precise" else "mp4"
+        clip = CLIPS / f"{clip_key(video, self.spec)}.{ext}"
         self.phase = f"Video {index + 1} of {len(self.items)}"
         if clip.exists():
             item.update(state="done", progress=100.0)
@@ -275,18 +323,17 @@ class Job:
         fast = self.spec["mode"] == "fast"
         base = 90 if fast else 40
         length = video["end"] - video["start"]
-        tmp = CLIPS / f"{clip.stem}.tmp.mp4"
-        cmd = [*FFMPEG, "-ss", f"{video['start']:.3f}", "-i", str(source), "-t", f"{length:.3f}", "-map", "0:v:0", "-map", "0:a:0?"]
+        tmp = clip.with_name(f"{clip.stem}.tmp{clip.suffix}")
         if fast:
-            cmd += ["-c", "copy", "-avoid_negative_ts", "make_zero"]
-        else:
-            w, h = FRAME[self.spec["quality"]]
-            cmd += [
-                "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2", "-video_track_timescale", "90000",
+            keyframe = next_keyframe(source, video["start"])
+            length = max(video["end"] - keyframe, 1.0)
+            cmd = [
+                *FFMPEG, "-ss", f"{keyframe:.3f}", "-i", str(source), "-t", f"{length:.3f}",
+                "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-avoid_negative_ts", "make_zero",
+                "-movflags", "+faststart", str(tmp),
             ]
-        cmd += ["-movflags", "+faststart", str(tmp)]
+        else:
+            cmd = precise_cut_cmd(source, video["start"], length, self.spec["quality"], tmp)
 
         def set_pct(pct):
             item["progress"] = round(base + (100 - base) * pct / 100, 1)
@@ -294,26 +341,47 @@ class Job:
         self.execute(cmd, ffmpeg_reader(length, set_pct))
         tmp.replace(clip)
 
+    def check_sync(self, path, expected):
+        durations = stream_durations(path)
+        audio, picture = durations.get("audio"), durations.get("video")
+        if audio is None or picture is None:
+            return
+        if abs(audio - picture) > 0.25 or abs(picture - expected) > 0.25:
+            self.warnings.append(
+                f"Merged video is {picture:.2f} s with {audio:.2f} s of audio, expected {expected:.2f} s. Sound may be out of sync."
+            )
+
     def merge(self, clips):
         self.phase = "Merging"
         paths = [path for path, _ in clips]
         if self.spec["mode"] == "fast" and len({stream_signature(p) for p in paths}) > 1:
-            self.warning = "Some videos differ in resolution or audio format. If the merged video glitches, process again in Precise mode."
-        durations = [probe_duration(p) for p in paths]
+            self.warnings.append("Some videos differ in resolution or audio format. If the merged video glitches, process again in Precise mode.")
+        precise = self.spec["mode"] == "precise"
+        if precise:
+            durations = [v["end"] - v["start"] for _, v in clips]
+            entries = [f"file '{p}'\nduration {d:.6f}\n" for p, d in zip(paths, durations)]
+        else:
+            durations = [probe_duration(p) for p in paths]
+            entries = [f"file '{p}'\n" for p in paths]
         concat = WORK / "concat.txt"
-        concat.write_text("".join(f"file '{p}'\n" for p in paths), encoding="utf-8")
+        concat.write_text("".join(entries), encoding="utf-8")
         cmd = [*FFMPEG, "-f", "concat", "-safe", "0", "-i", str(concat)]
         if self.spec["chapters"]:
             meta = WORK / "chapters.txt"
             meta.write_text(chapters_file([v["title"] for _, v in clips], durations), encoding="utf-8")
             cmd += ["-i", str(meta), "-map_metadata", "1", "-map_chapters", "1"]
         tmp = WORK / "merged.tmp.mp4"
-        cmd += ["-map", "0", "-c", "copy", "-movflags", "+faststart", str(tmp)]
+        cmd += ["-map", "0", "-c", "copy"]
+        if precise:
+            cmd += ["-bsf:a", "aac_adtstoasc"]
+        cmd += ["-movflags", "+faststart", "-f", "mp4", str(tmp)]
 
         def set_pct(pct):
             self.merge_progress = round(pct, 1)
 
         self.execute(cmd, ffmpeg_reader(sum(durations), set_pct))
+        if precise:
+            self.check_sync(tmp, sum(durations))
         out = unique_path(OUTPUT / f"{self.spec['output']}.mp4")
         shutil.move(str(tmp), str(out))
         self.output = str(out)
